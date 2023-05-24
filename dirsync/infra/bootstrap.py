@@ -22,16 +22,18 @@ def bootstrap_app(config: Config):
     try:
         src_repo = RepositoryFactory.generate_repository(config.src_dir, config)
     except exc.InvalidRepositoryLocationError:
-        exit('dirsync.py: error: could not infer repository type for src_repo')
+        exit('dirsync.py: error: could not register src_repo')
     except exc.LogfileInRepoError:
         exit('dirsync.py: error: logfile inside src_repo currently unsupported')
 
     try:
         dest_repo = RepositoryFactory.generate_repository(config.dest_dir, config)
     except exc.InvalidRepositoryLocationError:
-        exit('dirsync.py: error: could not infer repository type for dest_repo')
+        exit('dirsync.py: error: could not register dest_repo')
     except exc.LogfileInRepoError:
         exit('dirsync.py: error: logfile inside dest_repo will be overwritten on sync')
+    except exc.DestinationRepoNotEmptyError:
+        exit('dirsync.py: error: dest_repo is not empty')
 
     # run app
     execute(src_repo, dest_repo, config)

@@ -19,6 +19,8 @@ class LocalFile(File):
     -------
     calculate_blake2b_hash() -> str:
         Calculates the BLAKE2b hash of the file and sets the object's `last_hash` attribute.
+    read() -> bytes:
+        Reads in the file and returns its contents as a `bytes` object.
     '''
 
     def __init__(self,
@@ -36,6 +38,7 @@ class LocalFile(File):
         Returns:
             hash (str): the BLAKE2b hash of the file
         '''
+
         hasher = hashlib.blake2b()
         with open(self.abs_path, "rb") as file:
             for chunk in iter(lambda: file.read(4096), b""):
@@ -43,3 +46,11 @@ class LocalFile(File):
 
         self.last_hash = hasher.hexdigest()
         return self.last_hash
+
+    def read(self) -> bytes:
+        '''Reads in the file and returns its contents as a `bytes` object.'''
+
+        with open(self.abs_path, 'rb') as file:
+            content: bytes = file.read()
+        
+        return content

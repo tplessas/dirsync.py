@@ -1,4 +1,7 @@
-from dirsync.infra.interface import cli
+from dirsync.infra.ui import cli
 
 if __name__ == "__main__":
-    cli.execute()
+    try:
+        cli.execute()
+    except KeyboardInterrupt:
+        pass

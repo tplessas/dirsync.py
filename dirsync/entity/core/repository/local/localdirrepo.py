@@ -6,7 +6,7 @@ from dirsync.entity.core.file.local.localfile import LocalFile
 from dirsync.entity.core.repository.repository import Repository
 
 from dirsync.entity.infra.config import Config
-from dirsync.entity.infra.exceptions import LogfileInRepoError
+from dirsync.entity.infra.exceptions import LogfileInRepoError, DestinationRepoNotEmptyError
 
 class LocalDirectoryRepositoryState(Enum):
     '''Represents last action taken in LocalDirectoryRepository objects.'''
@@ -17,6 +17,8 @@ class LocalDirectoryRepositoryState(Enum):
     MOVE = 5
     COPY = 6
     DELETE = 7
+    PRUNE = 8
+    GET = 9
 
 class LocalDirectoryRepository(Repository):
     '''
@@ -39,18 +41,39 @@ class LocalDirectoryRepository(Repository):
         Updates the state of the object by scanning the directory for changes.
     _contains(path: str) -> bool:
         Returns whether the given file is part of the directory tree.
+    get_file_at_path(rel_path: str) -> LocalFile:
+       Returns a LocalFile object found using its relative path.
+    get_file_with_hash(file_hash: str) -> LocalFile:
+       Returns a LocalFile object found using its hash.
+    create_file(rel_path: str, content: bytes) -> None:
+        Creates a new repository file at a relative path storing contents provided as a `bytes` object.
+    modify_file(rel_path: str, content: bytes) -> None:
+        Replaces the contents of a repository file at a relative path with the provided `bytes` content.
+    move_file(src_hash: str, dest_rel_path: str) -> None:
+        Moves a file already existing in the repository to another location.
+    copy_file(src_hash: str, dest_rel_path: str) -> None:
+        Copies a file already existing in the repository to another location.
+    delete_file(rel_path: str) -> None:
+        Deletes an existing repository file at a relative path.
+    prune() -> None:
+        Recursively removes any empty directories inside the repository,
+        as well as files not in its state.
     '''
 
     def __init__(self,
                  path: str,
                  config: Config):
         self.path = os.path.abspath(path)
-        self.last_action: LocalDirectoryRepositoryState = LocalDirectoryRepositoryState.INIT
+
         if self._contains(config.logfile_path):
             raise LogfileInRepoError()
+        if self.path == os.path.abspath(config.dest_dir) and os.listdir(self.path):
+            raise DestinationRepoNotEmptyError()
 
         self.filepath_file_map: dict[str, LocalFile] = {}
         self.hash_file_map: dict[str, list[LocalFile]] = {}
+
+        self.last_action: LocalDirectoryRepositoryState = LocalDirectoryRepositoryState.INIT
 
     def update_status(self) -> list[str]:
         '''
@@ -67,7 +90,7 @@ class LocalDirectoryRepository(Repository):
         new_changes: list[str] = []
         # walk directory and all subdirectories to get file paths
         abs_file_paths = []
-        for dirpath, subdirs, filenames in os.walk(self.path):
+        for dirpath, _, filenames in os.walk(self.path):
             for filename in filenames:
                 abs_file_paths.append(os.path.join(dirpath, filename))
 
@@ -126,34 +149,27 @@ class LocalDirectoryRepository(Repository):
         self.last_action = LocalDirectoryRepositoryState.READ
         return new_changes
 
-    def read_file_at_path(self, rel_path: str):
-        '''Reads a repository file using its relative path and returns its contents as a `bytes` object.'''
+    def get_file_at_path(self, rel_path: str) -> LocalFile:
+        '''Returns a LocalFile object found using its relative path.'''
 
-        with open(self.path + os.sep + rel_path, 'rb') as file:
-            content: bytes = file.read()
+        self.last_action = LocalDirectoryRepositoryState.GET
+        return self.filepath_file_map[rel_path]
 
-        self.last_action = LocalDirectoryRepositoryState.READ
-        return content
+    def get_file_with_hash(self, file_hash: str) -> LocalFile:
+        '''Returns a LocalFile object found using its hash.'''
 
-    def read_file_with_hash(self, file_hash: str):
-        '''Reads a repository file using its hash and returns its contents as a `bytes` object.'''
+        self.last_action = LocalDirectoryRepositoryState.GET
+        return self.hash_file_map[file_hash]
 
-        # get absolute path of a copy of the file
-        path = self.hash_file_map[file_hash][0].abs_path
-
-        with open(path, 'rb') as file:
-            content: bytes = file.read()
-
-        self.last_action = LocalDirectoryRepositoryState.READ
-        return content
-
-    def create_file(self, rel_path: str, content: bytes):
+    def create_file(self, rel_path: str, content: bytes) -> None:
         '''Creates a new repository file at a relative path storing contents provided as a `bytes` object.'''
 
         abs_path = self.path + os.sep + rel_path
+
         # create path if needed
-        if not os.path.exists(abs_path):
-            os.makedirs(abs_path)
+        dirpath = os.sep.join(abs_path.split(os.sep)[:-1])
+        if not os.path.exists(dirpath):
+            os.makedirs(dirpath)
 
         # write file
         with open(abs_path, 'wb') as file:
@@ -162,11 +178,11 @@ class LocalDirectoryRepository(Repository):
         # add file refernce to repository state
         file_obj = LocalFile(abs_path, rel_path)
         self.filepath_file_map[rel_path] = file_obj
-        self.hash_file_map[file_obj.last_hash] = file_obj
+        self.hash_file_map[file_obj.last_hash] = [file_obj]
 
         self.last_action = LocalDirectoryRepositoryState.CREATE
 
-    def modify_file(self, rel_path: str, content: bytes):
+    def modify_file(self, rel_path: str, content: bytes) -> None:
         '''Replaces the contents of a repository file at a relative path with the provided `bytes` content.'''
 
         file_obj = self.filepath_file_map[rel_path]
@@ -183,32 +199,41 @@ class LocalDirectoryRepository(Repository):
 
         self.last_action = LocalDirectoryRepositoryState.MODIFY
 
-    def move_file(self, src_hash: str, dest_rel_path: str):
+    def move_file(self, src_hash: str, dest_rel_path: str) -> None:
         '''Moves a file already existing in the repository to another location.'''
 
         file_obj = self.hash_file_map[src_hash][0]
         src_abs_path = file_obj.abs_path
         dest_abs_path = self.path + os.sep + dest_rel_path
 
+        # create path if needed
+        dirpath = os.sep.join(dest_abs_path.split(os.sep)[:-1])
+        if not os.path.exists(dirpath):
+            os.makedirs(dirpath)
+
         # move file
         shutil.move(src_abs_path, dest_abs_path)
 
-        # update file object and hash map
-        old_hash = file_obj.last_hash
-        del self.hash_file_map[old_hash]
-
+        # update file object and filepath map
         file_obj.abs_path = dest_abs_path
+        src_rel_path = file_obj.rel_path
         file_obj.rel_path = dest_rel_path
-        self.hash_file_map[file_obj.calculate_blake2b_hash()] = [file_obj]
+        del self.filepath_file_map[src_rel_path]
+        self.filepath_file_map[dest_rel_path] = file_obj
 
         self.last_action = LocalDirectoryRepositoryState.MOVE
 
-    def copy_file(self, src_hash: str, dest_rel_path: str):
+    def copy_file(self, src_hash: str, dest_rel_path: str) -> None:
         '''Copies a file already existing in the repository to another location.'''
 
         src_file_obj = self.hash_file_map[src_hash][0]
         src_abs_path = src_file_obj.abs_path
         dest_abs_path = self.path + os.sep + dest_rel_path
+
+        # create path if needed
+        dirpath = os.sep.join(dest_abs_path.split(os.sep)[:-1])
+        if not os.path.exists(dirpath):
+            os.makedirs(dirpath)
 
         # copy file
         shutil.copy(src_abs_path, dest_abs_path)
@@ -220,11 +245,41 @@ class LocalDirectoryRepository(Repository):
 
         self.last_action = LocalDirectoryRepositoryState.COPY
 
-    def delete_file(self, rel_path: str):
+    def delete_file(self, rel_path: str) -> None:
         '''Deletes an existing repository file at a relative path.'''
 
-    def prune_empty_dirs(self):
-        pass
+        file_obj = self.filepath_file_map[rel_path]
+        abs_path = self.filepath_file_map[rel_path].abs_path
+        file_hash = file_obj.last_hash
+
+        # delete file
+        os.remove(abs_path)
+
+        # remove references to file
+        del self.filepath_file_map[rel_path]
+        self.hash_file_map[file_hash].remove(file_obj)
+
+        self.last_action = LocalDirectoryRepositoryState.DELETE
+
+    def prune(self) -> None:
+        '''
+        Recursively removes any empty directories inside the repository,
+        as well as files not in its state.
+        '''
+        # delete empty directories
+        for dirpath, subdirs, filenames in os.walk(self.path, topdown=False):
+            if not subdirs and not filenames and dirpath != self.path:
+                os.rmdir(dirpath)
+
+        # delete unreferenced files
+        for dirpath, _, filenames in os.walk(self.path):
+            for filename in filenames:
+                abs_path = os.path.join(dirpath, filename)
+                rel_path = abs_path[len(self.path) + 1:]
+                if rel_path not in self.filepath_file_map:
+                    os.remove(abs_path)
+
+        self.last_action = LocalDirectoryRepositoryState.PRUNE
 
     def _contains(self, path_to_test: str) -> bool:
         '''

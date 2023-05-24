@@ -33,7 +33,7 @@ class RepositoryFactory:
         if type == RepositoryType.LOCALDIR:
             return LocalDirectoryRepository(location, config)
 
-        if os.path.exists(os.path.dirname(location)):
+        if os.path.isdir(location):
             return LocalDirectoryRepository(location, config)
 
         raise InvalidRepositoryLocationError()
